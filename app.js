@@ -1,4 +1,4 @@
-// Created by Claude (model: Claude Sonnet 5.5, Anthropic). AI-generated code: review and test before relying on it.
+// Created and modified by Claude (model: Claude Sonnet 5.5, Anthropic). AI-generated code: review and test before relying on it.
 'use strict';
 
 /* ======================================================================
@@ -142,6 +142,15 @@ function fmtSlot(min, len, tz) {
   return `${dateFmt(tz).format(ms)} ${t(ms)}\u2013${t(ms + len * 60000)}`;
 }
 
+/** Length in minutes of slot i. "Pick slots" meetings keep one length per slot. */
+const slotLen = (cfg, i) => (cfg.lens ? cfg.lens[i] : cfg.l);
+function fmtRange(min, len, tz) {
+  const ms = min * 60000;
+  const t = x => { const p = zonedParts(x, tz); return `${p2(p.h)}:${p2(p.mi)}`; };
+  return `${t(ms)}\u2013${t(ms + len * 60000)}`;
+}
+function dayKey(min, tz) { const p = zonedParts(min * 60000, tz); return `${p.y}-${p2(p.m)}-${p2(p.d)}`; }
+
 /** Layout for a list of slots in a given time zone: columns = days, rows = clock times. */
 function buildGrid(slots, tz) {
   const dates = new Map(), times = new Set(), cell = new Map();
@@ -160,7 +169,11 @@ function normalizeConfig(raw) {
   if (!raw || raw.v !== 1 || !Array.isArray(raw.s) || !raw.s.length || raw.s.length > MAX_SLOTS ||
       !raw.s.every(Number.isFinite)) throw new Error('bad config');
   const mail = String(raw.m || '').slice(0, 200);
+  const lens = Array.isArray(raw.ll) && raw.ll.length === raw.s.length && raw.ll.every(Number.isFinite)
+    ? raw.ll.map(x => Math.min(Math.max(x, 5), 1440)) : null;
   return {
+    k: raw.k === 'list' ? 'list' : 'grid',
+    lens,
     t: String(raw.t || 'Meeting').slice(0, 120),
     n: String(raw.n || '').slice(0, 1000),
     l: Math.min(Math.max(+raw.l || 60, 5), 600),
@@ -172,7 +185,7 @@ function normalizeConfig(raw) {
     g: raw.g && typeof raw.g === 'object' ? raw.g : null
   };
 }
-const configId = cfg => hashId(JSON.stringify([cfg.t, cfg.slots]));
+const configId = cfg => hashId(JSON.stringify(cfg.lens ? [cfg.t, cfg.slots, cfg.lens] : [cfg.t, cfg.slots]));
 
 /* ====================== Responses ====================== */
 /** states: array of '0' (no), '1' (ok), '2' (acceptable), one per slot. */
@@ -373,6 +386,8 @@ function renderSetup(prev) {
   const iso = d => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
   const wdLabel = i => new Intl.DateTimeFormat(LOCALE, { weekday: 'short', timeZone: 'UTC' }).format(Date.UTC(2024, 0, 1 + i));
   const wdSet = new Set(g0.wd || [1, 2, 3, 4, 5]);
+  let mode = prev && prev.k === 'list' ? 'list' : 'grid';
+  const manual = prev && prev.k === 'list' ? prev.slots.map((m, i) => ({ m, len: slotLen(prev, i) })) : [];
 
   const f = {
     title: h('input', { type: 'text', maxlength: 120, value: prev ? prev.t : '', placeholder: 'e.g. Project kick-off' }),
@@ -383,12 +398,18 @@ function renderSetup(prev) {
     from: h('input', { type: 'time', value: g0.f || '09:00' }),
     to: h('input', { type: 'time', value: g0.e || '17:00' }),
     len: h('select'),
+    md: h('input', { type: 'date', value: iso(mon) }),
+    mt: h('input', { type: 'time', value: '10:00' }),
+    ml: h('select'),
     folder: h('input', { type: 'text', value: prev ? prev.f : '', placeholder: 'Folder link or ID' }),
     mail: h('input', { type: 'email', value: prev ? prev.m : '', placeholder: 'organiser@example.org' }),
     people: h('textarea', { placeholder: 'One name per line' }, prev ? prev.p.join('\n') : '')
   };
   for (const n of [15, 30, 45, 60, 90, 120]) {
-    f.len.append(h('option', { value: n, selected: n === (prev ? prev.l : 60) }, n + ' minutes'));
+    f.len.append(h('option', { value: n, selected: n === (prev && prev.k !== 'list' ? prev.l : 60) }, n + ' minutes'));
+  }
+  for (const n of [15, 30, 45, 60, 90, 120, 180, 240]) {
+    f.ml.append(h('option', { value: n, selected: n === 60 }, n + ' minutes'));
   }
   const wdBoxes = [1, 2, 3, 4, 5, 6, 0].map(d => ({
     d, input: h('input', { type: 'checkbox', value: d, checked: wdSet.has(d) })
@@ -396,23 +417,88 @@ function renderSetup(prev) {
   const preview = h('p', { class: 'muted' });
   const status = makeStatus();
   const out = h('div');
+  const manualHost = h('div');
+  const modeHint = h('p', { class: 'muted' });
 
   function read() {
+    const tz = f.tz.value;
+    if (mode === 'list') {
+      const sorted = [...manual].sort((x, y) => x.m - y.m);
+      return { g: null, len: 60, tz, slots: sorted.map(s => s.m), lens: sorted.map(s => s.len) };
+    }
     const g = { a: f.a.value, b: f.b.value, wd: wdBoxes.filter(x => x.input.checked).map(x => x.d), f: f.from.value, e: f.to.value };
-    const len = +f.len.value, tz = f.tz.value;
+    const len = +f.len.value;
     let slots = [];
     if (g.a && g.b && g.f && g.e && g.a <= g.b && g.f < g.e) slots = generateSlots(g, len, tz);
-    return { g, len, tz, slots };
+    return { g, len, tz, slots, lens: null };
   }
   function updatePreview() {
     const { slots } = read();
+    if (mode === 'list') {
+      preview.textContent = slots.length ? `${slots.length} slot${slots.length === 1 ? '' : 's'} chosen` : 'No slots yet: add some above.';
+      return;
+    }
     const days = new Set(slots.map(m => zonedParts(m * 60000, f.tz.value))
       .map(p => `${p.y}-${p.m}-${p.d}`)).size;
     preview.textContent = slots.length
       ? `${slots.length} slots on ${days} days` + (slots.length > MAX_SLOTS ? ` (too many, the limit is ${MAX_SLOTS})` : '')
       : 'No slots yet: check dates, weekdays and hours.';
   }
+
+  function renderManual() {
+    manual.sort((x, y) => x.m - y.m);
+    manualHost.replaceChildren(manual.length
+      ? h('ul', { class: 'slotlist' }, manual.map((s, i) => h('li', {},
+        h('span', {}, `${fmtSlot(s.m, s.len, f.tz.value)} (${s.len} min)`),
+        h('button', { type: 'button', 'aria-label': 'Remove this slot', onclick: () => { manual.splice(i, 1); renderManual(); updatePreview(); } }, '×'))))
+      : h('p', { class: 'muted' }, 'No slots added yet.'));
+  }
+  function addManual() {
+    if (!f.md.value || !f.mt.value) return status.set('Choose a date and a start time.', 'err');
+    const [y, mo, d] = f.md.value.split('-').map(Number);
+    const [hh, mi] = f.mt.value.split(':').map(Number);
+    const m = localToUtcMs(y, mo, d, hh, mi, f.tz.value) / 60000;
+    if (manual.some(s => s.m === m)) return status.set('That start time is already in the list.', 'err');
+    if (manual.length >= MAX_SLOTS) return status.set(`At most ${MAX_SLOTS} slots are allowed.`, 'err');
+    manual.push({ m, len: +f.ml.value });
+    status.set('');
+    renderManual(); updatePreview();
+  }
+
+  const gridSec = h('div', {},
+    h('div', { class: 'row' }, h('div', {}, h('label', {}, 'First day'), f.a), h('div', {}, h('label', {}, 'Last day'), f.b)),
+    h('label', {}, 'Days of the week'), h('div', { class: 'days' }, wdBoxes.map(x => h('label', {}, x.input, wdLabel([1, 2, 3, 4, 5, 6, 0].indexOf(x.d))))),
+    h('div', { class: 'row' },
+      h('div', {}, h('label', {}, 'Each day from'), f.from),
+      h('div', {}, h('label', {}, 'until'), f.to),
+      h('div', {}, h('label', {}, 'Slot length'), f.len)));
+  const listSec = h('div', {},
+    h('div', { class: 'row' },
+      h('div', {}, h('label', {}, 'Date'), f.md),
+      h('div', {}, h('label', {}, 'Start time'), f.mt),
+      h('div', {}, h('label', {}, 'Length'), f.ml)),
+    h('div', { class: 'actions' },
+      h('button', { type: 'button', onclick: addManual }, 'Add slot'),
+      h('button', { type: 'button', onclick: () => { manual.length = 0; renderManual(); updatePreview(); } }, 'Clear all')),
+    manualHost);
+
+  const modeBtns = [['grid', 'Time grid (When2Meet style)'], ['list', 'Pick individual slots (Doodle style)']].map(([v, label]) => {
+    const b = h('button', { type: 'button', 'aria-pressed': v === mode, onclick: () => setMode(v) }, label);
+    b.dataset.v = v;
+    return b;
+  });
+  function setMode(v) {
+    mode = v;
+    modeBtns.forEach(b => b.setAttribute('aria-pressed', b.dataset.v === v));
+    gridSec.hidden = v !== 'grid';
+    listSec.hidden = v !== 'list';
+    modeHint.textContent = v === 'grid'
+      ? 'Regular slots on every chosen day. Participants can pick any times that suit them.'
+      : 'You choose the exact options, each with its own date, start time and length. Best when you only have a few candidates.';
+    renderManual(); updatePreview();
+  }
   [f.a, f.b, f.from, f.to, f.len, f.tz, ...wdBoxes.map(x => x.input)].forEach(el => el.addEventListener('input', updatePreview));
+  f.tz.addEventListener('input', renderManual);
 
   const pickBtn = GOOGLE.clientId && GOOGLE.apiKey && GOOGLE.appId
     ? h('button', {
@@ -424,16 +510,17 @@ function renderSetup(prev) {
 
   async function create() {
     const title = f.title.value.trim();
-    const { g, len, tz, slots } = read();
+    const r = read();
     const folder = parseFolder(f.folder.value);
     const mail = f.mail.value.trim();
     if (!title) return status.set('Please give the meeting a title.', 'err');
-    if (!slots.length) return status.set('There are no time slots yet.', 'err');
-    if (slots.length > MAX_SLOTS) return status.set(`Too many slots (max ${MAX_SLOTS}). Shorten the date range.`, 'err');
+    if (!r.slots.length) return status.set(mode === 'list' ? 'Add at least one time slot.' : 'There are no time slots yet.', 'err');
+    if (r.slots.length > MAX_SLOTS) return status.set(`Too many slots (max ${MAX_SLOTS}). Shorten the date range.`, 'err');
     if (folder === null) return status.set('The folder link or ID does not look right.', 'err');
     if (mail && !/^[^\s@,;?&]+@[^\s@,;?&]+$/.test(mail)) return status.set('The email address does not look right.', 'err');
     const people = f.people.value.split('\n').map(s => s.trim()).filter(Boolean);
-    const raw = { v: 1, t: title, n: f.notes.value.trim(), l: len, s: deltaEncode(slots), z: tz, m: mail, f: folder, p: people, g };
+    const base = { v: 1, t: title, n: f.notes.value.trim(), l: r.len, s: deltaEncode(r.slots), z: r.tz, m: mail, f: folder, p: people };
+    const raw = mode === 'list' ? { ...base, k: 'list', ll: r.lens } : { ...base, g: r.g };
     const packed = await pack(raw);
     const link = v => `${baseUrl()}#c=${packed}${v ? '&v=' + v : ''}`;
     const row = (label, url, hint) => {
@@ -461,13 +548,10 @@ function renderSetup(prev) {
       h('label', {}, 'Notes for participants (optional)'), f.notes),
     h('div', { class: 'card' },
       h('h2', {}, '2. Possible time slots'),
-      h('div', { class: 'row' }, h('div', {}, h('label', {}, 'First day'), f.a), h('div', {}, h('label', {}, 'Last day'), f.b)),
-      h('label', {}, 'Days of the week'), h('div', { class: 'days' }, wdBoxes.map(x => h('label', {}, x.input, wdLabel([1, 2, 3, 4, 5, 6, 0].indexOf(x.d))))),
-      h('div', { class: 'row' },
-        h('div', {}, h('label', {}, 'Each day from'), f.from),
-        h('div', {}, h('label', {}, 'until'), f.to),
-        h('div', {}, h('label', {}, 'Slot length'), f.len)),
-      h('label', {}, 'These times are in time zone'), f.tz, preview),
+      h('div', { class: 'brushes' }, modeBtns),
+      modeHint,
+      h('label', {}, 'These times are in time zone'), f.tz,
+      gridSec, listSec, preview),
     h('div', { class: 'card' },
       h('h2', {}, '3. Where answers go'),
       h('label', {}, 'Google Drive folder (participants need edit access)'),
@@ -476,7 +560,7 @@ function renderSetup(prev) {
       h('label', {}, 'Expected participants (optional, to see who has not answered)'), f.people),
     h('div', { class: 'actions' }, h('button', { class: 'primary', type: 'button', onclick: create }, 'Create links')),
     status, out);
-  updatePreview();
+  setMode(mode);
 }
 
 /* ====================== Participant ====================== */
@@ -526,7 +610,7 @@ function renderParticipant(cfg) {
       g.dates.forEach(([dk]) => {
         const i = g.cell.get(dk + '|' + tk);
         if (i == null) return tr.append(h('td', { class: 'void' }));
-        const label = fmtSlot(cfg.slots[i], cfg.l, tz);
+        const label = fmtSlot(cfg.slots[i], slotLen(cfg, i), tz);
         const td = h('td', { class: 'cell', tabindex: 0, role: 'button', 'aria-label': label, title: label, 'data-s': states[i] }, GLYPH[states[i]]);
         td.addEventListener('pointerdown', e => { if (e.pointerType === 'mouse' && e.button === 0) { dragging = true; paint(i); e.preventDefault(); } });
         td.addEventListener('pointerenter', () => { if (dragging) paint(i); });
@@ -539,7 +623,28 @@ function renderParticipant(cfg) {
     });
     gridHost.replaceChildren(h('table', { class: 'grid' }, h('thead', {}, head), body));
   }
-  tzSel.addEventListener('input', () => { tz = tzSel.value; drawGrid(); });
+  /* "Pick slots" meetings: one row per option with three buttons, instead of a grid */
+  function drawList() {
+    els = [];
+    const host = h('div', { class: 'optlist' });
+    let day = '';
+    cfg.slots.forEach((m, i) => {
+      const dk = dayKey(m, tz);
+      if (dk !== day) { day = dk; host.append(h('h3', { class: 'dayhead' }, dateFmt(tz).format(m * 60000))); }
+      const seg = [['1', 'OK'], ['2', 'Acceptable'], ['0', 'No']].map(([v, label]) => {
+        const b = h('button', { type: 'button', class: 'seg', 'aria-pressed': states[i] === v, onclick: () => {
+          states[i] = v; seg.forEach(x => x.setAttribute('aria-pressed', x.dataset.v === v)); saveDraft();
+        } }, h('span', { class: 'swatch' }, GLYPH[v] || '\u00d7'), label);
+        b.dataset.v = v;
+        return b;
+      });
+      host.append(h('div', { class: 'optrow' },
+        h('span', { class: 'opttime' }, fmtRange(m, slotLen(cfg, i), tz)), h('div', { class: 'segs' }, seg)));
+    });
+    gridHost.replaceChildren(host);
+  }
+  const draw = () => (cfg.k === 'list' ? drawList() : drawGrid());
+  tzSel.addEventListener('input', () => { tz = tzSel.value; draw(); });
 
   const brushBtns = [['1', 'OK'], ['2', 'Acceptable'], ['0', 'No']].map(([v, label]) => {
     const b = h('button', { type: 'button', 'aria-pressed': v === brush, onclick: () => {
@@ -594,11 +699,13 @@ function renderParticipant(cfg) {
     h('div', { class: 'card' },
       h('div', { class: 'row' }, h('div', {}, h('label', {}, 'Your name'), nameIn), h('div', {}, h('label', {}, 'Your time zone'), tzSel)),
       h('label', {}, 'Mark the slots'),
-      h('p', { class: 'muted' }, 'Pick a mark, then click or drag over the slots. Click a day or time label to fill the whole column or row. Unmarked slots count as "No".'),
-      h('div', { class: 'brushes' }, brushBtns),
+      cfg.k === 'list'
+        ? h('p', { class: 'muted' }, 'Choose OK, Acceptable or No for each option. Options left on "No" count as unavailable.')
+        : h('p', { class: 'muted' }, 'Pick a mark, then click or drag over the slots. Click a day or time label to fill the whole column or row. Unmarked slots count as "No".'),
+      cfg.k === 'list' ? null : h('div', { class: 'brushes' }, brushBtns),
       gridHost),
     h('div', { class: 'card' }, h('h2', {}, 'Send your answer'), actions, status));
-  drawGrid();
+  draw();
 }
 
 /* ====================== Organiser: results ====================== */
@@ -649,10 +756,29 @@ function renderResults(cfg) {
     selected = i;
     const list = (title, arr) => h('div', {}, h('h3', {}, `${title} (${arr.length})`),
       arr.length ? h('div', { class: 'chips' }, arr.map(n => h('span', { class: 'chip' }, n))) : h('p', { class: 'muted' }, '\u2014'));
-    detail.replaceChildren(h('div', { class: 'card' }, h('h2', {}, fmtSlot(cfg.slots[i], cfg.l, tz)),
+    detail.replaceChildren(h('div', { class: 'card' }, h('h2', {}, fmtSlot(cfg.slots[i], slotLen(cfg, i), tz)),
       list('OK', agg.ok[i]), list('Acceptable', agg.acc[i]), list('No', agg.no[i]),
       pending.length ? list('No answer yet', pending) : null));
     draw();
+  }
+
+  function drawListHeat(N, agg, best, pending) {
+    const host = h('div', { class: 'optlist' });
+    let day = '';
+    cfg.slots.forEach((m, i) => {
+      const dk = dayKey(m, tz);
+      if (dk !== day) { day = dk; host.append(h('h3', { class: 'dayhead' }, dateFmt(tz).format(m * 60000))); }
+      const ok = agg.ok[i].length, ac = agg.acc[i].length;
+      const label = `${fmtSlot(m, slotLen(cfg, i), tz)}: ${ok} OK, ${ac} acceptable`;
+      host.append(h('button', {
+        type: 'button', class: 'optres' + (best.has(i) ? ' best' : '') + (selected === i ? ' sel' : ''), title: label, 'aria-label': label,
+        onclick: () => showDetail(i, agg, pending)
+      },
+      h('span', { class: 'opttime' }, fmtRange(m, slotLen(cfg, i), tz)),
+      h('span', { class: 'bar' }, N ? [h('i', { class: 'b-ok', style: `width:${ok / N * 100}%` }), h('i', { class: 'b-acc', style: `width:${ac / N * 100}%` })] : null),
+      h('span', { class: 'cnt' }, ac ? `${ok}+${ac}` : `${ok}`)));
+    });
+    heatHost.replaceChildren(host);
   }
 
   function draw() {
@@ -672,11 +798,12 @@ function renderResults(cfg) {
     const topList = N ? ranks.slice(0, 5).filter(i => attendance(agg, i) > 0) : [];
     picks.replaceChildren(h('div', { class: 'card' }, h('h2', {}, 'Best options'),
       topList.length ? h('ol', { class: 'picks' }, topList.map(i => h('li', {},
-        h('button', { type: 'button', onclick: () => showDetail(i, agg, pending) }, fmtSlot(cfg.slots[i], cfg.l, tz)),
+        h('button', { type: 'button', onclick: () => showDetail(i, agg, pending) }, fmtSlot(cfg.slots[i], slotLen(cfg, i), tz)),
         ` \u2013 ${agg.ok[i].length} OK, ${agg.acc[i].length} acceptable` +
         (agg.no[i].length ? `; cannot: ${agg.no[i].join(', ')}` : '')))) : h('p', { class: 'muted' }, 'Nothing to rank yet.'),
       h('p', { class: 'muted' }, 'Ranked by how many people can attend, then by how many answered "OK".')));
 
+    if (cfg.k === 'list') { drawListHeat(N, agg, best, pending); return; }
     const g = buildGrid(cfg.slots, tz);
     const head = h('tr', {}, h('th', {}));
     g.dates.forEach(([, label]) => head.append(h('th', {}, label)));
@@ -687,7 +814,7 @@ function renderResults(cfg) {
         const i = g.cell.get(dk + '|' + tk);
         if (i == null) return tr.append(h('td', { class: 'void' }));
         const ok = agg.ok[i].length, ac = agg.acc[i].length;
-        const label = `${fmtSlot(cfg.slots[i], cfg.l, tz)}: ${ok} OK, ${ac} acceptable`;
+        const label = `${fmtSlot(cfg.slots[i], slotLen(cfg, i), tz)}: ${ok} OK, ${ac} acceptable`;
         const cellEl = h('button', {
           type: 'button', class: 'heat' + (best.has(i) ? ' best' : '') + (selected === i ? ' sel' : ''), title: label, 'aria-label': label,
           onclick: () => showDetail(i, agg, pending)
@@ -739,7 +866,7 @@ function renderResults(cfg) {
       h('div', { class: 'legend' },
         h('span', {}, h('i', { class: 'dot', style: 'background:var(--ok)' }), 'OK'),
         h('span', {}, h('i', { class: 'dot', style: 'background:var(--acc)' }), 'Acceptable'),
-        h('span', {}, 'Cell label: OK+acceptable. Blue outline: best options. Click a slot for names.')),
+        h('span', {}, cfg.k === 'list' ? 'Number: OK+acceptable. Blue outline: best options. Click an option for names.' : 'Cell label: OK+acceptable. Blue outline: best options. Click a slot for names.')),
       heatHost),
     detail);
   draw();
@@ -770,6 +897,6 @@ if (typeof document !== 'undefined') {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     pack, unpack, hashId, slug, localToUtcMs, generateSlots, deltaEncode, deltaDecode, buildGrid, fmtSlot,
-    normalizeConfig, configId, makeResponse, aggregate, rankSlots, parseFolder
+    normalizeConfig, configId, makeResponse, aggregate, rankSlots, parseFolder, slotLen, fmtRange, dayKey
   };
 }

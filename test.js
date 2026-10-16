@@ -1,4 +1,4 @@
-// Created by Claude (model: Claude Sonnet 5.5, Anthropic). AI-generated code: review and test before relying on it.
+// Created and modified by Claude (model: Claude Sonnet 5.5, Anthropic). AI-generated code: review and test before relying on it.
 // Run with: node test.js   (needs Node 18+)
 'use strict';
 const assert = require('assert');
@@ -57,6 +57,21 @@ const A = require('./app.js');
   const back = await A.unpack(await A.pack(r2));
   assert.strictEqual(back.n, 'Bj\u00f6rn');
   assert.strictEqual(back.s, r2.s);
+
+  // "Pick slots" (Doodle style) meeting with a length per slot
+  const picked = [{ m: slots[0], len: 30 }, { m: slots[3], len: 60 }, { m: slots[10], len: 90 }];
+  const rawL = { v: 1, k: 'list', t: 'Pick', l: 60, s: A.deltaEncode(picked.map(x => x.m)), ll: picked.map(x => x.len), z: 'UTC', m: '', f: '', p: [] };
+  const cfgL = A.normalizeConfig(await A.unpack(await A.pack(rawL)));
+  assert.strictEqual(cfgL.k, 'list');
+  assert.deepStrictEqual(cfgL.slots, picked.map(x => x.m));
+  assert.deepStrictEqual(cfgL.lens, [30, 60, 90]);
+  assert.strictEqual(A.slotLen(cfgL, 2), 90);
+  assert.strictEqual(A.slotLen(cfg, 0), 60);          // grid meetings use the single length
+  assert.strictEqual(cfg.k, 'grid');
+  assert.notStrictEqual(A.configId(cfgL), A.configId({ ...cfgL, lens: [60, 60, 60] }));
+  assert.strictEqual(A.normalizeConfig({ ...rawL, ll: [30, 60] }).lens, null); // length mismatch is ignored
+  assert.strictEqual(A.fmtRange(slots[0], 30, 'Europe/Helsinki'), '09:00\u201309:30');
+  assert.strictEqual(A.dayKey(slots[0], 'Europe/Helsinki'), '2026-10-19');
 
   // Helpers
   assert.strictEqual(A.parseFolder('https://drive.google.com/drive/folders/1AbC_dEf-GhIjKl?usp=sharing'), '1AbC_dEf-GhIjKl');
