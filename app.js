@@ -486,7 +486,7 @@ function renderSetup(prev) {
       h('button', { type: 'button', onclick: () => { manual.length = 0; renderManual(); updatePreview(); } }, 'Clear all')),
     manualHost);
 
-  const modeBtns = [['grid', 'Time grid (When2Meet style)'], ['list', 'Pick individual slots (Doodle style)']].map(([v, label]) => {
+  const modeBtns = [['grid', 'Time grid'], ['list', 'Pick individual slots']].map(([v, label]) => {
     const b = h('button', { type: 'button', 'aria-pressed': v === mode, onclick: () => setMode(v) }, label);
     b.dataset.v = v;
     return b;
