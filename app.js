@@ -338,6 +338,10 @@ function h(tag, props, ...kids) {
   }
   return el; // text is always added as text nodes, never as HTML
 }
+function aboutNote() {
+  return h('p', { class: 'muted' }, 'Meeting Finder is a static web page: nothing is saved on the server, which only delivers the page code. Source code on ',
+    h('a', { href: 'https://github.com/tombackstrom/meeting-finder', target: '_blank', rel: 'noopener' }, 'GitHub'), '.');
+}
 const mount = () => { const r = document.getElementById('root'); r.replaceChildren(); return r; };
 const baseUrl = () => location.href.split('#')[0];
 
@@ -542,8 +546,7 @@ function renderSetup(prev) {
   root.append(
     h('h1', {}, prev ? 'Edit meeting' : 'Find a meeting time'),
     h('p', { class: 'muted' }, 'Choose possible time slots, then share the generated link. Everything you enter is stored in the link itself.'),
-    ...(prev ? [] : [h('p', { class: 'muted' }, 'Meeting Finder is a static web page: nothing is saved on the server, which only delivers the page code. Source code on ',
-      h('a', { href: 'https://github.com/tombackstrom/meeting-finder', target: '_blank', rel: 'noopener' }, 'GitHub'), '.')]),
+    ...(prev ? [] : [aboutNote()]),
     h('div', { class: 'card' },
       h('h2', {}, '1. The meeting'),
       h('label', {}, 'Title'), f.title,
@@ -706,7 +709,8 @@ function renderParticipant(cfg) {
         : h('p', { class: 'muted' }, 'Pick a mark, then click or drag over the slots. Click a day or time label to fill the whole column or row. Unmarked slots count as "No".'),
       cfg.k === 'list' ? null : h('div', { class: 'brushes' }, brushBtns),
       gridHost),
-    h('div', { class: 'card' }, h('h2', {}, 'Send your answer'), actions, status));
+    h('div', { class: 'card' }, h('h2', {}, 'Send your answer'), actions, status),
+    aboutNote());
   draw();
 }
 
