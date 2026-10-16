@@ -542,6 +542,8 @@ function renderSetup(prev) {
   root.append(
     h('h1', {}, prev ? 'Edit meeting' : 'Find a meeting time'),
     h('p', { class: 'muted' }, 'Choose possible time slots, then share the generated link. Everything you enter is stored in the link itself.'),
+    ...(prev ? [] : [h('p', { class: 'muted' }, 'Meeting Finder is a static web page: nothing is saved on the server, which only delivers the page code. Source code on ',
+      h('a', { href: 'https://github.com/tombackstrom/meeting-finder', target: '_blank', rel: 'noopener' }, 'GitHub'), '.')]),
     h('div', { class: 'card' },
       h('h2', {}, '1. The meeting'),
       h('label', {}, 'Title'), f.title,
